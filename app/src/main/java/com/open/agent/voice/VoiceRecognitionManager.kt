@@ -14,6 +14,7 @@ import org.vosk.android.SpeechService
 import org.vosk.android.StorageService
 import java.io.IOException
 
+
 /**
  * 语音识别状态
  */
@@ -63,7 +64,12 @@ class VoiceRecognitionManager(
     val modelLoaded: StateFlow<Boolean> = _modelLoaded.asStateFlow()
     
     // 是否持续监听模式
+    @Volatile
     private var continuousListening = false
+    
+    // 是否已释放资源（防止崩溃）
+    @Volatile
+    private var isReleased = false
     
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     
@@ -78,8 +84,33 @@ class VoiceRecognitionManager(
      * 初始化语音识别器（加载模型）
      */
     fun initialize() {
+        initializeAndStart(null)
+    }
+    
+    /**
+     * 初始化并在完成后执行回调
+     * @param onReady 模型加载完成后的回调
+     */
+    fun initializeAndStart(onReady: (() -> Unit)?) {
         if (model != null) {
             Log.d(TAG, "模型已加载")
+            onReady?.invoke()
+            return
+        }
+        
+        // 如果已经在加载中，等待加载完成
+        if (_state.value == VoiceRecognitionState.LOADING) {
+            Log.d(TAG, "模型正在加载中，等待完成...")
+            scope.launch {
+                while (_state.value == VoiceRecognitionState.LOADING) {
+                    delay(100)
+                }
+                if (_modelLoaded.value) {
+                    withContext(Dispatchers.Main) {
+                        onReady?.invoke()
+                    }
+                }
+            }
             return
         }
         
@@ -89,13 +120,14 @@ class VoiceRecognitionManager(
             try {
                 Log.d(TAG, "开始加载Vosk中文模型...")
                 
-                // 从assets解压并加载模型
+                // 从 assets 解压并加载模型
                 StorageService.unpack(context, MODEL_PATH, "model",
                     { loadedModel ->
                         model = loadedModel
                         _modelLoaded.value = true
                         _state.value = VoiceRecognitionState.IDLE
                         Log.d(TAG, "Vosk中文模型加载完成")
+                        onReady?.invoke()
                     },
                     { exception ->
                         Log.e(TAG, "模型加载失败", exception)
@@ -132,18 +164,9 @@ class VoiceRecognitionManager(
      */
     private fun startRecognition() {
         if (model == null) {
-            Log.d(TAG, "模型未加载，先初始化")
-            initialize()
-            // 等待模型加载完成后再开始
-            scope.launch {
-                while (!_modelLoaded.value && _state.value == VoiceRecognitionState.LOADING) {
-                    delay(100)
-                }
-                if (_modelLoaded.value) {
-                    withContext(Dispatchers.Main) {
-                        doStartRecognition()
-                    }
-                }
+            Log.d(TAG, "模型未加载，先初始化并启动")
+            initializeAndStart {
+                doStartRecognition()
             }
             return
         }
@@ -152,22 +175,37 @@ class VoiceRecognitionManager(
     }
     
     private fun doStartRecognition() {
+        if (isReleased) return
+        
         if (_state.value == VoiceRecognitionState.LISTENING) {
-            Log.d(TAG, "已经在监听中")
+            return  // 已经在监听中，不重复启动
+        }
+        
+        if (model == null) {
+            Log.w(TAG, "模型未加载，无法启动识别")
             return
         }
         
         try {
+            // 先释放之前的 SpeechService
+            safeStopSpeechService()
+            
+            if (isReleased) return
+            
             val recognizer = Recognizer(model, SAMPLE_RATE)
             speechService = SpeechService(recognizer, SAMPLE_RATE)
             speechService?.startListening(this)
             
             _state.value = VoiceRecognitionState.LISTENING
-            Log.d(TAG, "开始语音识别")
-        } catch (e: IOException) {
-            Log.e(TAG, "启动语音识别失败", e)
-            _state.value = VoiceRecognitionState.ERROR
-            onResult(VoiceRecognitionResult.Error(-1, "启动语音识别失败: ${e.message}"))
+            if (!continuousListening) {
+                Log.d(TAG, "开始语音识别")
+            }
+        } catch (e: Exception) {
+            if (!isReleased) {
+                Log.e(TAG, "启动语音识别失败", e)
+                _state.value = VoiceRecognitionState.ERROR
+                onResult(VoiceRecognitionResult.Error(-1, "启动语音识别失败: ${e.message}"))
+            }
         }
     }
     
@@ -176,8 +214,7 @@ class VoiceRecognitionManager(
      */
     fun stopListening() {
         continuousListening = false
-        speechService?.stop()
-        speechService = null
+        safeStopSpeechService()
         _state.value = VoiceRecognitionState.IDLE
         Log.d(TAG, "停止语音识别")
     }
@@ -187,8 +224,7 @@ class VoiceRecognitionManager(
      */
     fun cancel() {
         continuousListening = false
-        speechService?.cancel()
-        speechService = null
+        safeStopSpeechService()
         _state.value = VoiceRecognitionState.IDLE
         Log.d(TAG, "取消语音识别")
     }
@@ -197,15 +233,44 @@ class VoiceRecognitionManager(
      * 释放资源
      */
     fun release() {
+        Log.d(TAG, "开始释放语音识别器...")
+        isReleased = true  // 先标记为已释放
         continuousListening = false
-        speechService?.shutdown()
-        speechService = null
-        model?.close()
+        
+        // 安全停止 SpeechService
+        safeStopSpeechService()
+        
+        // 关闭模型
+        try {
+            model?.close()
+        } catch (e: Exception) {
+            Log.w(TAG, "关闭 Model 异常", e)
+        }
         model = null
+        
         _modelLoaded.value = false
         _state.value = VoiceRecognitionState.IDLE
         scope.cancel()
         Log.d(TAG, "语音识别器已释放")
+    }
+    
+    /**
+     * 安全停止 SpeechService（避免崩溃）
+     */
+    private fun safeStopSpeechService() {
+        val service = speechService
+        speechService = null
+        
+        if (service != null) {
+            try {
+                // 先调用 stop，它会设置内部标志停止线程
+                service.stop()
+                // 等待一小段时间让线程结束
+                Thread.sleep(100)
+            } catch (e: Exception) {
+                Log.w(TAG, "停止 SpeechService 异常", e)
+            }
+        }
     }
     
     // ========== RecognitionListener 回调 ==========
@@ -214,7 +279,7 @@ class VoiceRecognitionManager(
      * 收到部分识别结果
      */
     override fun onPartialResult(hypothesis: String?) {
-        if (hypothesis.isNullOrEmpty()) return
+        if (isReleased || hypothesis.isNullOrEmpty()) return
         
         try {
             val json = JSONObject(hypothesis)
@@ -224,7 +289,9 @@ class VoiceRecognitionManager(
                 onResult(VoiceRecognitionResult.Partial)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "解析部分结果失败", e)
+            if (!isReleased) {
+                Log.e(TAG, "解析部分结果失败", e)
+            }
         }
     }
     
@@ -232,7 +299,7 @@ class VoiceRecognitionManager(
      * 收到最终识别结果
      */
     override fun onResult(hypothesis: String?) {
-        if (hypothesis.isNullOrEmpty()) return
+        if (isReleased || hypothesis.isNullOrEmpty()) return
         
         try {
             val json = JSONObject(hypothesis)
@@ -244,18 +311,10 @@ class VoiceRecognitionManager(
                 _state.value = VoiceRecognitionState.IDLE
                 onResult(VoiceRecognitionResult.Success(text))
             }
-            
-            // 持续监听模式下重新开始
-            if (continuousListening && text.isNotEmpty()) {
-                scope.launch {
-                    delay(200)
-                    withContext(Dispatchers.Main) {
-                        doStartRecognition()
-                    }
-                }
-            }
         } catch (e: Exception) {
-            Log.e(TAG, "解析结果失败", e)
+            if (!isReleased) {
+                Log.e(TAG, "解析结果失败", e)
+            }
         }
     }
     
@@ -263,19 +322,37 @@ class VoiceRecognitionManager(
      * 最终结果（语音结束）
      */
     override fun onFinalResult(hypothesis: String?) {
-        Log.d(TAG, "最终结果: $hypothesis")
-        onResult(hypothesis)
+        if (isReleased) return
         
-        // 持续监听模式下重新开始
-        if (continuousListening) {
-            _state.value = VoiceRecognitionState.IDLE
-            scope.launch {
-                delay(300)
-                withContext(Dispatchers.Main) {
-                    doStartRecognition()
+        // 解析结果
+        if (!hypothesis.isNullOrEmpty()) {
+            try {
+                val json = JSONObject(hypothesis)
+                val text = json.optString("text", "").trim()
+                if (text.isNotEmpty()) {
+                    Log.d(TAG, "最终结果: $text")
+                    _lastRecognizedText.value = text
+                    onResult(VoiceRecognitionResult.Success(text))
+                }
+            } catch (e: Exception) {
+                if (!isReleased) {
+                    Log.e(TAG, "解析最终结果失败", e)
                 }
             }
-        } else {
+        }
+        
+        // 持续监听模式下重新启动
+        if (continuousListening && !isReleased) {
+            _state.value = VoiceRecognitionState.IDLE
+            scope.launch {
+                delay(500)
+                withContext(Dispatchers.Main) {
+                    if (continuousListening && !isReleased) {
+                        doStartRecognition()
+                    }
+                }
+            }
+        } else if (!isReleased) {
             _state.value = VoiceRecognitionState.IDLE
         }
     }
@@ -284,17 +361,26 @@ class VoiceRecognitionManager(
      * 识别错误
      */
     override fun onError(exception: Exception?) {
+        if (isReleased) return
+        
         Log.e(TAG, "识别错误", exception)
+        
+        safeStopSpeechService()
+        
         _state.value = VoiceRecognitionState.ERROR
-        onResult(VoiceRecognitionResult.Error(-1, exception?.message ?: "未知错误"))
+        if (!isReleased) {
+            onResult(VoiceRecognitionResult.Error(-1, exception?.message ?: "未知错误"))
+        }
         
         // 持续监听模式下重新开始
-        if (continuousListening) {
+        if (continuousListening && !isReleased) {
             scope.launch {
-                delay(1000)
+                delay(2000)
                 withContext(Dispatchers.Main) {
-                    _state.value = VoiceRecognitionState.IDLE
-                    doStartRecognition()
+                    if (continuousListening && !isReleased) {
+                        _state.value = VoiceRecognitionState.IDLE
+                        doStartRecognition()
+                    }
                 }
             }
         }
@@ -304,15 +390,19 @@ class VoiceRecognitionManager(
      * 识别超时
      */
     override fun onTimeout() {
+        if (isReleased) return
+        
         Log.d(TAG, "识别超时")
         _state.value = VoiceRecognitionState.IDLE
         
         // 持续监听模式下重新开始
-        if (continuousListening) {
+        if (continuousListening && !isReleased) {
             scope.launch {
-                delay(200)
+                delay(500)
                 withContext(Dispatchers.Main) {
-                    doStartRecognition()
+                    if (continuousListening && !isReleased) {
+                        doStartRecognition()
+                    }
                 }
             }
         }

@@ -95,8 +95,9 @@ class AgentService : Service() {
                 serviceScope.launch {
                     agentController.initialize()
                 }
-                // 自动启动语音控制（常开模式）
-                startVoiceControlAlwaysOn()
+                // 监听任务事件，用于通知语音服务
+                observeAgentEvents()
+                // 语音控制需要用户手动开启
             }
             ACTION_STOP -> {
                 stopForegroundService()
@@ -321,6 +322,34 @@ class AgentService : Service() {
             Log.d(TAG, "收到语音命令: $command")
             // 执行语音命令
             startTask(command)
+        }
+    }
+    
+    /**
+     * 监听Agent事件，用于通知语音服务任务状态
+     */
+    private fun observeAgentEvents() {
+        serviceScope.launch {
+            agentController.events.collect { event ->
+                when (event) {
+                    is AgentEvent.TaskStarted -> {
+                        // 任务开始，通知语音服务暂停唤醒词检测
+                        voiceService?.onTaskStarted()
+                    }
+                    is AgentEvent.TaskCompleted -> {
+                        // 任务完成，通知语音服务恢复唤醒词检测
+                        voiceService?.onTaskCompleted()
+                        updateNotification("🎉 任务完成: ${event.message}")
+                    }
+                    is AgentEvent.Error -> {
+                        // 任务出错，也恢复唤醒词检测
+                        voiceService?.onTaskCompleted()
+                    }
+                    else -> {
+                        // 其他事件不处理
+                    }
+                }
+            }
         }
     }
     

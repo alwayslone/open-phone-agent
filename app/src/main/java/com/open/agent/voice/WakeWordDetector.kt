@@ -30,7 +30,7 @@ class WakeWordDetector(
         // 默认唤醒词列表
         val DEFAULT_WAKE_WORDS = listOf(
             "贾维斯",
-            "运行指令", 
+            "运行 指令", 
         )
     }
     
