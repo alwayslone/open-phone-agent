@@ -1,15 +1,10 @@
 ✨ 项目简介
 
-Open Phone Agent 是一个面向 Android 设备的开源 AI Agent 项目，使用root，目标是成为贾维斯。
+Open Phone Agent基于root控制手机
 
-目前项目已经实现：
-
-✔️ ai控制手机。
-
-未来会实现：
-
-☠️ 语音控制
-☠️ 信息提醒
+✔️ ai控制手机
+☠️ 语音控制(即将诞生)
+☠️ 信息提醒(即将诞生)
 
 请使用android studio编译它
 
