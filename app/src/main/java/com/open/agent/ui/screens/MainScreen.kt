@@ -14,6 +14,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.open.agent.ai.AIProvider
 import com.open.agent.ui.components.*
 import com.open.agent.viewmodel.MainViewModel
+import com.open.agent.voice.VoiceServiceState
 
 /**
  * 主屏幕
@@ -26,6 +27,8 @@ fun MainScreen(
     val uiState by viewModel.uiState.collectAsState()
     val logs by viewModel.logs.collectAsState()
     val screenshotPreview by viewModel.screenshotPreview.collectAsState()
+    val voiceState by viewModel.voiceState.collectAsState()
+    val isVoiceEnabled by viewModel.isVoiceEnabled.collectAsState()
     
     var selectedTab by remember { mutableIntStateOf(0) }
     
@@ -131,10 +134,14 @@ fun MainScreen(
                         0 -> ControlTab(
                             uiState = uiState,
                             logs = logs,
+                            isVoiceEnabled = isVoiceEnabled,
+                            voiceState = voiceState,
                             onInstructionChange = viewModel::updateInstruction,
                             onStart = { viewModel.startTask(uiState.currentInstruction) },
                             onStop = viewModel::stopTask,
-                            onClearLogs = viewModel::clearLogs
+                            onClearLogs = viewModel::clearLogs,
+                            onToggleVoice = viewModel::toggleVoiceControl,
+                            onTriggerVoiceCommand = viewModel::triggerVoiceCommand
                         )
                         1 -> ConfigTab(
                             uiState = uiState,
@@ -179,10 +186,14 @@ fun MainScreen(
 private fun ControlTab(
     uiState: com.open.agent.viewmodel.MainUiState,
     logs: List<com.open.agent.viewmodel.LogEntry>,
+    isVoiceEnabled: Boolean,
+    voiceState: VoiceServiceState,
     onInstructionChange: (String) -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
-    onClearLogs: () -> Unit
+    onClearLogs: () -> Unit,
+    onToggleVoice: () -> Unit,
+    onTriggerVoiceCommand: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -202,6 +213,14 @@ private fun ControlTab(
             onInstructionChange = onInstructionChange,
             onStart = onStart,
             onStop = onStop
+        )
+        
+        // 语音控制卡片
+        VoiceControlCard(
+            isVoiceEnabled = isVoiceEnabled,
+            voiceState = voiceState,
+            onToggleVoice = onToggleVoice,
+            onTriggerVoiceCommand = onTriggerVoiceCommand
         )
         
         // 提示信息

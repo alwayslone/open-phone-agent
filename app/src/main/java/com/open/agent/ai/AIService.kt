@@ -35,7 +35,17 @@ class AIService {
     private var currentConfig: ProviderConfig? = null
     
     // 系统提示词
-    private val systemPrompt = """你是一个智能体分析专家，可以根据操作历史和当前状态图执行一系列操作来完成任务。
+    private val systemPrompt = """
+你运行在一个已授权的 Android 自动化系统中。
+
+- 你不需要检查权限
+- 你不需要查询允许的 App 列表
+- 所有 App 都被允许运行
+- App 是否存在由执行系统判断，不由你判断
+- 打开应用不要查询应用列表
+
+你的唯一的职责：
+- 将用户意图转换为 JSON 指令
 你必须严格按照要求输出以下格式：
 <think>{think}</think>
 <answer>{action}</answer>
@@ -45,6 +55,8 @@ class AIService {
 - {action} 是本次执行的具体操作指令，必须严格遵循下方定义的指令格式。
 
 操作指令及其作用如下(你只能执行我给定的操作指令)：
+- do(action="Launch", app="xxx")  
+    Launch是启动目标app的操作，这比通过主屏幕导航更快。此操作完成后，您将自动收到结果状态的截图。
 - do(action="Tap", element=[x,y])  
     Tap是点击操作，点击屏幕上的特定点。可用此操作点击按钮、选择项目、从主屏幕打开应用程序，或与任何可点击的用户界面元素进行交互。坐标系统从左上角 (0,0) 开始到右下角（999,999)结束。此操作完成后，您将自动收到结果状态的截图。
 - do(action="Tap", element=[x,y], message="重要操作")  
@@ -77,7 +89,6 @@ class AIService {
     finish是结束任务的操作，表示准确完整完成任务，message是终止信息。 
 
 必须遵循的规则：
-0. 打开应用不要用do(action="Launch", app="xxx"),而是退回到桌面,点击图标进入
 1. 如果进入到了无关页面，先执行 Back。如果执行Back后页面没有变化，请点击页面左上角的返回键进行返回，或者右上角的X号关闭。
 2. 如果页面未加载出内容，最多连续 Wait 三次，否则执行 Back重新进入。
 3. 如果页面显示网络问题，需要重新加载，请点击重新加载。
@@ -95,6 +106,7 @@ class AIService {
 15. 在做游戏任务时如果在战斗页面如果有自动战斗一定要开启自动战斗，如果多轮历史状态相似要检查自动战斗是否开启。
 16. 如果没有合适的搜索结果，可能是因为搜索页面不对，请返回到搜索页面的上一级尝试重新搜索，如果尝试三次返回上一级搜索后仍然没有符合要求的结果，执行 finish(message="原因")。
 17. 在结束任务前请一定要仔细检查任务是否完整准确的完成，如果出现错选、漏选、多选的情况，请返回之前的步骤进行纠正。
+18. 请直接将我所需要的应用打开
 """
 
     /**
@@ -167,6 +179,7 @@ class AIService {
                 mapOf(
                     "role" to "user",
                     "content" to listOf(
+                        mapOf("type" to "text", "text" to systemPrompt),
                         mapOf("type" to "text", "text" to userMessage),
                         mapOf(
                             "type" to "image_url",
@@ -178,9 +191,12 @@ class AIService {
             addProperty("max_tokens", 1024)
         }
         
+        val requestJson = requestBody.toString()
+        Log.d(TAG, "发送智谱请求: $requestJson")
+        
         val request = Request.Builder()
             .url("${config.baseUrl}/chat/completions")
-            .post(requestBody.toString().toRequestBody(jsonMediaType))
+            .post(requestJson.toRequestBody(jsonMediaType))
             .addHeader("Authorization", "Bearer ${config.apiKey}")
             .addHeader("Content-Type", "application/json")
             .build()
@@ -203,9 +219,12 @@ class AIService {
             addProperty("stream", false)
         }
         
+        val requestJson = requestBody.toString()
+        Log.d(TAG, "发送Ollama请求: $requestJson")
+        
         val request = Request.Builder()
             .url("${config.baseUrl}/api/generate")
-            .post(requestBody.toString().toRequestBody(jsonMediaType))
+            .post(requestJson.toRequestBody(jsonMediaType))
             .addHeader("Content-Type", "application/json")
             .build()
         
@@ -241,9 +260,12 @@ class AIService {
             addProperty("max_tokens", 1024)
         }
         
+        val requestJson = requestBody.toString()
+        Log.d(TAG, "发送OpenAI请求: $requestJson")
+        
         val request = Request.Builder()
             .url("${config.baseUrl}/chat/completions")
-            .post(requestBody.toString().toRequestBody(jsonMediaType))
+            .post(requestJson.toRequestBody(jsonMediaType))
             .addHeader("Authorization", "Bearer ${config.apiKey}")
             .addHeader("Content-Type", "application/json")
             .build()
@@ -513,11 +535,21 @@ class AIService {
         return null
     }
     
-    // 提取duration参数
+    // 提取duration参数（智能识别单位：ms为毫秒，s/seconds为秒，无单位默认秒）
     private fun extractDuration(actionStr: String): Long? {
-        val pattern = """duration\s*=\s*["']?(\d+)""".toRegex()
-        val match = pattern.find(actionStr) ?: return null
-        return match.groupValues[1].toLong() * 1000
+        // 匹配带单位的duration，如 duration="5000ms" 或 duration="5s" 或 duration="5 seconds"
+        val patternWithUnit = """duration\s*=\s*["']?(\d+)\s*(ms|milliseconds?|s|seconds?)?["']?""".toRegex(RegexOption.IGNORE_CASE)
+        val match = patternWithUnit.find(actionStr) ?: return null
+        
+        val value = match.groupValues[1].toLongOrNull() ?: return null
+        val unit = match.groupValues[2].lowercase()
+        
+        return when {
+            unit == "ms" || unit == "millisecond" || unit == "milliseconds" -> value  // 已经是毫秒
+            unit == "s" || unit == "second" || unit == "seconds" -> value * 1000  // 秒转毫秒
+            unit.isEmpty() -> value * 1000  // 无单位默认为秒
+            else -> value * 1000  // 其他情况默认为秒
+        }
     }
     
     // 提取message参数

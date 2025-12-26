@@ -21,6 +21,9 @@ import com.open.agent.controller.AgentController
 import com.open.agent.controller.AgentEvent
 import com.open.agent.controller.AgentState
 import com.open.agent.parser.ParsedAction
+import com.open.agent.voice.VoiceEvent
+import com.open.agent.voice.VoiceService
+import com.open.agent.voice.VoiceServiceState
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -52,6 +55,9 @@ class AgentService : Service() {
     // Agent控制器
     private lateinit var agentController: AgentController
     
+    // 语音服务
+    private var voiceService: VoiceService? = null
+    
     // WakeLock保持CPU唤醒
     private var wakeLock: PowerManager.WakeLock? = null
     
@@ -72,6 +78,9 @@ class AgentService : Service() {
         // 初始化Agent控制器
         agentController = AgentController(applicationContext)
         
+        // 初始化语音服务
+        initVoiceService()
+        
         // 获取WakeLock
         acquireWakeLock()
     }
@@ -86,6 +95,8 @@ class AgentService : Service() {
                 serviceScope.launch {
                     agentController.initialize()
                 }
+                // 自动启动语音控制（常开模式）
+                startVoiceControlAlwaysOn()
             }
             ACTION_STOP -> {
                 stopForegroundService()
@@ -113,6 +124,10 @@ class AgentService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "AgentService销毁")
+        
+        // 停止语音服务
+        voiceService?.stop()
+        voiceService = null
         
         releaseWakeLock()
         agentController.release()
@@ -208,9 +223,10 @@ class AgentService : Service() {
             PowerManager.PARTIAL_WAKE_LOCK,
             "OpenPhoneAgent::AgentWakeLock"
         ).apply {
-            acquire(60 * 60 * 1000L) // 最长1小时
+            // 无限期保持唤醒（确保屏幕关闭时也能监听）
+            acquire()
         }
-        Log.d(TAG, "WakeLock已获取")
+        Log.d(TAG, "WakeLock已获取（无限期）")
     }
     
     /**
@@ -293,5 +309,81 @@ class AgentService : Service() {
      */
     suspend fun initializeAgent(): Boolean {
         return agentController.initialize()
+    }
+    
+    // ========== 语音控制API ==========
+    
+    /**
+     * 初始化语音服务
+     */
+    private fun initVoiceService() {
+        voiceService = VoiceService(applicationContext) { command ->
+            Log.d(TAG, "收到语音命令: $command")
+            // 执行语音命令
+            startTask(command)
+        }
+    }
+    
+    /**
+     * 启动语音控制
+     */
+    fun startVoiceControl() {
+        voiceService?.start()
+        updateNotification("🎙️ 语音助手已启动，等待唤醒词...")
+        Log.d(TAG, "语音控制已启动")
+    }
+    
+    /**
+     * 启动语音控制（常开模式）
+     */
+    fun startVoiceControlAlwaysOn() {
+        voiceService?.startAlwaysOn()
+        updateNotification("🎙️ 语音助手已启动（常开模式）")
+        Log.d(TAG, "语音控制已启动（常开模式）")
+    }
+    
+    /**
+     * 停止语音控制
+     */
+    fun stopVoiceControl() {
+        voiceService?.stop()
+        updateNotification("Agent已就绪")
+        Log.d(TAG, "语音控制已停止")
+    }
+    
+    /**
+     * 手动触发语音命令
+     */
+    fun triggerVoiceCommand() {
+        voiceService?.triggerVoiceCommand()
+    }
+    
+    /**
+     * 获取语音服务状态
+     */
+    fun getVoiceState(): StateFlow<VoiceServiceState>? = voiceService?.state
+    
+    /**
+     * 获取语音事件
+     */
+    fun getVoiceEvents(): SharedFlow<VoiceEvent>? = voiceService?.events
+    
+    /**
+     * 语音是否启用
+     */
+    fun isVoiceEnabled(): StateFlow<Boolean>? = voiceService?.isVoiceEnabled
+    
+    /**
+     * 设置唤醒词
+     */
+    fun setWakeWords(words: List<String>) {
+        voiceService?.setWakeWords(words)
+    }
+    
+    /**
+     * 获取唤醒词
+     */
+    fun getWakeWords(): List<String> {
+        return voiceService?.getWakeWords() ?: emptyList()
     }
 }

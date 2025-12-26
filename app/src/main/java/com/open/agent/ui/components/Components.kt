@@ -34,6 +34,7 @@ import com.open.agent.controller.AgentState
 import com.open.agent.viewmodel.LogEntry
 import com.open.agent.viewmodel.LogLevel
 import com.open.agent.viewmodel.MainUiState
+import com.open.agent.voice.VoiceServiceState
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -241,35 +242,15 @@ fun AIConfigCard(
                     
                     Spacer(modifier = Modifier.height(8.dp))
                     
-                    // 模型选择
-                    var expanded by remember { mutableStateOf(false) }
-                    ExposedDropdownMenuBox(
-                        expanded = expanded,
-                        onExpandedChange = { expanded = !expanded }
-                    ) {
-                        OutlinedTextField(
-                            value = uiState.modelName,
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("模型") },
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                            modifier = Modifier.fillMaxWidth().menuAnchor()
-                        )
-                        ExposedDropdownMenu(
-                            expanded = expanded,
-                            onDismissRequest = { expanded = false }
-                        ) {
-                            listOf("glm-4v-flash", "glm-4v", "glm-4v-plus").forEach { model ->
-                                DropdownMenuItem(
-                                    text = { Text(model) },
-                                    onClick = {
-                                        onModelChange(model)
-                                        expanded = false
-                                    }
-                                )
-                            }
-                        }
-                    }
+                    // 模型输入
+                    OutlinedTextField(
+                        value = uiState.modelName,
+                        onValueChange = onModelChange,
+                        label = { Text("模型") },
+                        placeholder = { Text("glm-4v-flash, glm-4v-plus, glm-4v...") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
                     
                     Spacer(modifier = Modifier.height(12.dp))
                     
@@ -900,5 +881,166 @@ fun ScreenshotPreviewCard(
                 }
             }
         }
+    }
+}
+
+/**
+ * 语音控制卡片
+ */
+@Composable
+fun VoiceControlCard(
+    isVoiceEnabled: Boolean,
+    voiceState: VoiceServiceState,
+    onToggleVoice: () -> Unit,
+    onTriggerVoiceCommand: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.Mic,
+                        contentDescription = null,
+                        tint = if (isVoiceEnabled) MaterialTheme.colorScheme.primary else Color.Gray
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = "语音控制",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = getVoiceStateDescription(voiceState),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                
+                Switch(
+                    checked = isVoiceEnabled,
+                    onCheckedChange = { onToggleVoice() }
+                )
+            }
+            
+            if (isVoiceEnabled) {
+                Spacer(modifier = Modifier.height(12.dp))
+                
+                // 语音状态指示
+                VoiceStatusIndicator(voiceState = voiceState)
+                
+                Spacer(modifier = Modifier.height(12.dp))
+                
+                // 手动触发按钮
+                Button(
+                    onClick = onTriggerVoiceCommand,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = voiceState == VoiceServiceState.WAITING_WAKE_WORD
+                ) {
+                    Icon(Icons.Default.Mic, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("点击说话")
+                }
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                // 唤醒词提示
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Info,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.secondary
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "说\"你好助手\"或\"小助手\"唤醒",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 语音状态指示器
+ */
+@Composable
+private fun VoiceStatusIndicator(
+    voiceState: VoiceServiceState
+) {
+    val color = when (voiceState) {
+        VoiceServiceState.DISABLED -> Color.Gray
+        VoiceServiceState.WAITING_WAKE_WORD -> Color(0xFF4CAF50)
+        VoiceServiceState.LISTENING_COMMAND -> Color(0xFFFF9800)
+        VoiceServiceState.PROCESSING_COMMAND -> Color(0xFF2196F3)
+        VoiceServiceState.EXECUTING -> Color(0xFF9C27B0)
+    }
+    
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(color.copy(alpha = 0.1f))
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 动画指示器
+        Box(
+            modifier = Modifier
+                .size(12.dp)
+                .clip(CircleShape)
+                .background(color)
+        )
+        Spacer(modifier = Modifier.width(12.dp))
+        
+        Text(
+            text = when (voiceState) {
+                VoiceServiceState.DISABLED -> "语音服务已禁用"
+                VoiceServiceState.WAITING_WAKE_WORD -> "🎙️ 正在监听唤醒词..."
+                VoiceServiceState.LISTENING_COMMAND -> "🗣️ 请说出您的指令..."
+                VoiceServiceState.PROCESSING_COMMAND -> "⚙️ 正在处理指令..."
+                VoiceServiceState.EXECUTING -> "🚀 正在执行任务..."
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            color = color
+        )
+    }
+}
+
+/**
+ * 获取语音状态描述
+ */
+private fun getVoiceStateDescription(state: VoiceServiceState): String {
+    return when (state) {
+        VoiceServiceState.DISABLED -> "未启用"
+        VoiceServiceState.WAITING_WAKE_WORD -> "等待唤醒词"
+        VoiceServiceState.LISTENING_COMMAND -> "正在听取指令"
+        VoiceServiceState.PROCESSING_COMMAND -> "处理中"
+        VoiceServiceState.EXECUTING -> "执行中"
     }
 }

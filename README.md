@@ -10,4 +10,6 @@ Open Phone Agent基于root控制手机
 
 请使用android studio编译它
 
+并且输出依赖adbkeyboard别忘记安装它。
+
 加入我们qq：907307187

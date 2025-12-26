@@ -16,6 +16,8 @@ import com.open.agent.controller.AgentEvent
 import com.open.agent.controller.AgentState
 import com.open.agent.parser.ParsedAction
 import com.open.agent.service.AgentService
+import com.open.agent.voice.VoiceEvent
+import com.open.agent.voice.VoiceServiceState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -42,6 +44,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _logs = MutableStateFlow<List<LogEntry>>(emptyList())
     val logs: StateFlow<List<LogEntry>> = _logs
     
+    // 语音状态
+    private val _voiceState = MutableStateFlow(VoiceServiceState.DISABLED)
+    val voiceState: StateFlow<VoiceServiceState> = _voiceState
+    
+    private val _isVoiceEnabled = MutableStateFlow(false)
+    val isVoiceEnabled: StateFlow<Boolean> = _isVoiceEnabled
+    
     // 截图预览
     private val _screenshotPreview = MutableStateFlow<String?>(null)
     val screenshotPreview: StateFlow<String?> = _screenshotPreview
@@ -57,6 +66,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             
             // 绑定服务后开始监听状态
             startObservingService()
+            
+            // 开始监听语音状态
+            startObservingVoice()
             
             // 自动应用已保存的配置
             applySavedConfig()
@@ -407,6 +419,110 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _logs.value = emptyList()
     }
     
+    // ========== 语音控制 ==========
+    
+    /**
+     * 监听语音状态
+     */
+    private fun startObservingVoice() {
+        val service = agentService ?: return
+        
+        // 监听语音状态
+        viewModelScope.launch {
+            service.getVoiceState()?.collectLatest { state ->
+                _voiceState.value = state
+            }
+        }
+        
+        // 监听语音启用状态
+        viewModelScope.launch {
+            service.isVoiceEnabled()?.collectLatest { enabled ->
+                _isVoiceEnabled.value = enabled
+            }
+        }
+        
+        // 监听语音事件
+        viewModelScope.launch {
+            service.getVoiceEvents()?.collectLatest { event ->
+                handleVoiceEvent(event)
+            }
+        }
+    }
+    
+    /**
+     * 处理语音事件
+     */
+    private fun handleVoiceEvent(event: VoiceEvent) {
+        when (event) {
+            is VoiceEvent.WakeWordDetected -> {
+                addLog(LogEntry(LogLevel.INFO, "🎙️ 唤醒词已检测，请说出指令..."))
+            }
+            is VoiceEvent.CommandRecognized -> {
+                addLog(LogEntry(LogLevel.SUCCESS, "🗣️ 语音指令: ${event.command}"))
+            }
+            is VoiceEvent.Error -> {
+                addLog(LogEntry(LogLevel.ERROR, "语音识别错误: ${event.message}"))
+            }
+            is VoiceEvent.CommandTimeout -> {
+                addLog(LogEntry(LogLevel.WARNING, "语音指令超时"))
+            }
+            is VoiceEvent.ServiceStarted -> {
+                addLog(LogEntry(LogLevel.INFO, "🎙️ 语音服务已启动，等待唤醒词..."))
+            }
+            is VoiceEvent.ServiceStopped -> {
+                addLog(LogEntry(LogLevel.INFO, "语音服务已停止"))
+            }
+        }
+    }
+    
+    /**
+     * 启动语音控制
+     */
+    fun startVoiceControl() {
+        agentService?.startVoiceControl()
+    }
+    
+    /**
+     * 停止语音控制
+     */
+    fun stopVoiceControl() {
+        agentService?.stopVoiceControl()
+    }
+    
+    /**
+     * 切换语音控制
+     */
+    fun toggleVoiceControl() {
+        if (_isVoiceEnabled.value) {
+            stopVoiceControl()
+        } else {
+            startVoiceControl()
+        }
+    }
+    
+    /**
+     * 手动触发语音命令
+     */
+    fun triggerVoiceCommand() {
+        agentService?.triggerVoiceCommand()
+        addLog(LogEntry(LogLevel.INFO, "🎙️ 正在听取语音指令..."))
+    }
+    
+    /**
+     * 设置唤醒词
+     */
+    fun setWakeWords(words: List<String>) {
+        agentService?.setWakeWords(words)
+        addLog(LogEntry(LogLevel.INFO, "唤醒词已设置: $words"))
+    }
+    
+    /**
+     * 获取唤醒词
+     */
+    fun getWakeWords(): List<String> {
+        return agentService?.getWakeWords() ?: emptyList()
+    }
+    
     /**
      * 处理Agent事件
      */
@@ -471,7 +587,10 @@ data class MainUiState(
     val aiServerUrl: String = "http://localhost:11434",
     val apiKey: String = "",
     val modelName: String = "glm-4v-flash",
-    val currentInstruction: String = ""
+    val currentInstruction: String = "",
+    // 语音控制
+    val isVoiceEnabled: Boolean = false,
+    val voiceState: VoiceServiceState = VoiceServiceState.DISABLED
 )
 
 /**

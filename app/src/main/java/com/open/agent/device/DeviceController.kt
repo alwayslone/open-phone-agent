@@ -508,17 +508,18 @@ class DeviceController(
         val appMap = mutableMapOf<String, String>()
         
         try {
-            // 使用pm list packages -f获取所有包名
+            // 使用pm list packages -3只获取第三方应用（排除系统应用）
             val packagesResult = rootExecutor.executeCommand("pm list packages -3")
             if (!packagesResult.success) {
                 android.util.Log.e("DeviceController", "获取应用列表失败: ${packagesResult.error}")
                 return@withContext appMap
             }
             
-            // 解析包名列表
+            // 解析包名列表 - 格式: package:com.example.app
             val packageNames = packagesResult.output.lines()
                 .filter { it.startsWith("package:") }
                 .map { it.removePrefix("package:").trim() }
+                .filter { it.isNotEmpty() && !it.contains("/") && !it.contains("=") }
             
             android.util.Log.d("DeviceController", "找到 ${packageNames.size} 个应用")
             
@@ -527,6 +528,7 @@ class DeviceController(
                 val appName = getAppName(packageName)
                 if (appName.isNotEmpty()) {
                     appMap[appName] = packageName
+                    android.util.Log.d("DeviceController", "找到 ${appName} ")
                     // 也添加包名作为键，方便直接使用包名查找
                     appMap[packageName] = packageName
                 }
@@ -544,21 +546,37 @@ class DeviceController(
     
     /**
      * 获取应用名称
+     * 优先使用PackageManager获取中文名称
      */
     private suspend fun getAppName(packageName: String): String {
         try {
-            // 使用dumpsys package获取应用信息
+            // 优先使用PackageManager获取应用名称（这是最可靠的方法）
+            try {
+                val pm = context.packageManager
+                val appInfo = pm.getApplicationInfo(packageName, 0)
+                val label = pm.getApplicationLabel(appInfo).toString()
+                if (label.isNotEmpty() && label != packageName) {
+                    android.util.Log.d("DeviceController", "应用名称: $label")
+                    return label
+                }
+            } catch (e: Exception) {
+                // PackageManager失败，继续尝试其他方法
+            }
+            
+            // 备用方案：使用dumpsys package获取应用信息
             val result = rootExecutor.executeCommand(
-                "dumpsys package $packageName | grep -A1 'applicationInfo'"
+                "dumpsys package $packageName | grep -E 'labelRes|nonLocalizedLabel'"
             )
             
-            // 尝试从dumpsys输出中提取应用名
             if (result.success && result.output.isNotEmpty()) {
                 // 查找labelRes或者nonLocalizedLabel
-                val labelPattern = """nonLocalizedLabel=([^\s]+)""".toRegex()
+                val labelPattern = """nonLocalizedLabel=([^\s,]+)""".toRegex()
                 val match = labelPattern.find(result.output)
                 if (match != null) {
-                    return match.groupValues[1]
+                    val label = match.groupValues[1]
+                    if (label.isNotEmpty() && label != "null") {
+                        return label
+                    }
                 }
             }
             
@@ -584,18 +602,24 @@ class DeviceController(
     
     /**
      * 根据应用名称查找包名
-     * 支持模糊匹配
+     * 支持精确匹配、模糊匹配、相同字符匹配
      */
     suspend fun findPackageByName(appName: String): String? {
         val apps = getInstalledApps()
         
+        android.util.Log.d("DeviceController", "开始匹配应用: $appName, 已安装应用数: ${apps.size}")
+        
         // 1. 精确匹配
-        apps[appName]?.let { return it }
+        apps[appName]?.let { 
+            android.util.Log.d("DeviceController", "精确匹配成功: $appName")
+            return it 
+        }
         
         // 2. 忽略大小写匹配
         val lowerName = appName.lowercase()
         for ((name, pkg) in apps) {
             if (name.lowercase() == lowerName) {
+                android.util.Log.d("DeviceController", "忽略大小写匹配成功: $name")
                 return pkg
             }
         }
@@ -603,56 +627,191 @@ class DeviceController(
         // 3. 包含匹配
         for ((name, pkg) in apps) {
             if (name.lowercase().contains(lowerName) || lowerName.contains(name.lowercase())) {
+                android.util.Log.d("DeviceController", "包含匹配成功: $name")
                 return pkg
             }
         }
         
-        // 4. 常用应用名称映射
+        // 4. 常用应用名称映射（包含谐音）
         val commonApps = mapOf(
+            // 微信（含谐音）
             "微信" to "com.tencent.mm",
+            "威信" to "com.tencent.mm",
             "wechat" to "com.tencent.mm",
+            "weixin" to "com.tencent.mm",
+            "wx" to "com.tencent.mm",
+            // QQ
             "qq" to "com.tencent.mobileqq",
             "QQ" to "com.tencent.mobileqq",
+            "扣扣" to "com.tencent.mobileqq",
+            // 支付宝
             "支付宝" to "com.eg.android.AlipayGphone",
             "alipay" to "com.eg.android.AlipayGphone",
+            "zfb" to "com.eg.android.AlipayGphone",
+            // 淘宝
             "淘宝" to "com.taobao.taobao",
             "taobao" to "com.taobao.taobao",
-            "押音" to "com.ss.android.ugc.aweme",
+            "tb" to "com.taobao.taobao",
+            // 抖音（含谐音）
             "抖音" to "com.ss.android.ugc.aweme",
+            "押音" to "com.ss.android.ugc.aweme",
+            "斗音" to "com.ss.android.ugc.aweme",
             "tiktok" to "com.ss.android.ugc.aweme",
+            "douyin" to "com.ss.android.ugc.aweme",
+            "dy" to "com.ss.android.ugc.aweme",
+            // 快手
             "快手" to "com.smile.gifmaker",
+            "ks" to "com.smile.gifmaker",
+            // 美团
             "美团" to "com.sankuai.meituan",
+            "meituan" to "com.sankuai.meituan",
+            // 饿了么（含谐音）
             "饿了么" to "me.ele",
+            "饿了吗" to "me.ele",
+            "eleme" to "me.ele",
+            // 其他常用应用
             "大众点评" to "com.dianping.v1",
             "高德地图" to "com.autonavi.minimap",
+            "高德" to "com.autonavi.minimap",
             "百度地图" to "com.baidu.BaiduMap",
             "京东" to "com.jingdong.app.mall",
+            "jd" to "com.jingdong.app.mall",
             "拼多多" to "com.xunmeng.pinduoduo",
+            "pdd" to "com.xunmeng.pinduoduo",
             "小红书" to "com.xingin.xhs",
+            "xhs" to "com.xingin.xhs",
             "微博" to "com.sina.weibo",
+            "weibo" to "com.sina.weibo",
             "知乎" to "com.zhihu.android",
+            "zhihu" to "com.zhihu.android",
             "bilibili" to "tv.danmaku.bili",
             "哔哩哔哩" to "tv.danmaku.bili",
             "b站" to "tv.danmaku.bili",
+            "bili" to "tv.danmaku.bili",
             "网易云音乐" to "com.netease.cloudmusic",
+            "网易云" to "com.netease.cloudmusic",
+            "云音乐" to "com.netease.cloudmusic",
             "qq音乐" to "com.tencent.qqmusic",
+            "qqmusic" to "com.tencent.qqmusic",
+            // 系统应用
             "设置" to "com.android.settings",
             "settings" to "com.android.settings",
             "相机" to "com.android.camera",
             "camera" to "com.android.camera",
             "相册" to "com.android.gallery3d",
             "图库" to "com.android.gallery3d",
+            "gallery" to "com.android.gallery3d",
             "文件管理" to "com.android.documentsui",
+            "files" to "com.android.documentsui",
             "日历" to "com.android.calendar",
+            "calendar" to "com.android.calendar",
             "计算器" to "com.android.calculator2",
+            "calculator" to "com.android.calculator2",
             "时钟" to "com.android.deskclock",
+            "clock" to "com.android.deskclock",
+            "闹钟" to "com.android.deskclock",
             "备忘录" to "com.android.notes"
         )
         
-        commonApps[appName]?.let { return it }
-        commonApps[appName.lowercase()]?.let { return it }
+        commonApps[appName]?.let { 
+            android.util.Log.d("DeviceController", "常用应用映射成功: $appName")
+            return it 
+        }
+        commonApps[appName.lowercase()]?.let { 
+            android.util.Log.d("DeviceController", "常用应用映射成功(小写): $appName")
+            return it 
+        }
+        
+        // 5. 相同汉字/单词匹配 - 找出与app名称相同字符最多的应用
+        val bestMatch = findBestMatchByCommonChars(appName, apps)
+        if (bestMatch != null) {
+            android.util.Log.d("DeviceController", "相同字符匹配成功: $appName -> $bestMatch")
+            return bestMatch
+        }
+        
+        android.util.Log.w("DeviceController", "未找到匹配的应用: $appName")
+        return null
+    }
+    
+    /**
+     * 通过相同汉字/单词数量找最佳匹配
+     * 计算查询词与每个应用名称和包名的相同字符数，返回相同字符最多的应用包名
+     */
+    private fun findBestMatchByCommonChars(query: String, apps: Map<String, String>): String? {
+        if (query.isBlank()) return null
+        
+        // 提取查询词中的所有字符（汉字和英文单词）
+        val queryChars = extractCharsAndWords(query)
+        if (queryChars.isEmpty()) return null
+        
+        android.util.Log.d("DeviceController", "查询词字符集: $queryChars")
+        
+        var bestPkg: String? = null
+        var bestScore = 0
+        var bestName = ""
+        
+        // 记录已检查的包名，避免重复
+        val checkedPkgs = mutableSetOf<String>()
+        
+        for ((name, pkg) in apps) {
+            // 避免重复检查同一个包名
+            if (pkg in checkedPkgs) continue
+            checkedPkgs.add(pkg)
+            
+            // 同时从应用名和包名中提取字符
+            val nameChars = extractCharsAndWords(name)
+            val pkgChars = extractCharsAndWords(pkg)
+            val allChars = nameChars
+            
+            // 计算相同字符/单词数量
+            val commonCount = countCommonElements(queryChars, allChars)
+            
+            if (commonCount > bestScore) {
+                bestScore = commonCount
+                bestPkg = pkg
+                bestName = if (name != pkg) name else pkg
+            }
+        }
+        
+        // 至少要有1个相同字符才算匹配成功
+        if (bestScore >= 1) {
+            android.util.Log.d("DeviceController", "最佳匹配: '$query' -> '$bestName' ($bestPkg) (相同字符数: $bestScore)")
+            return bestPkg
+        }
         
         return null
+    }
+    
+    /**
+     * 提取字符串中的所有汉字和英文单词
+     */
+    private fun extractCharsAndWords(text: String): Set<String> {
+        val result = mutableSetOf<String>()
+        
+        // 提取每个汉字（作为单独的字符）
+        for (char in text) {
+            if (char.code in 0x4E00..0x9FFF) {
+                result.add(char.toString())
+            }
+        }
+        
+        // 提取英文单词（连续的字母序列，按.分割包名）
+        val wordPattern = """[a-zA-Z]+""".toRegex()
+        wordPattern.findAll(text).forEach { match ->
+            val word = match.value.lowercase()
+            if (word.length >= 2) {  // 只保留2个字母以上的单词
+                result.add(word)
+            }
+        }
+        
+        return result
+    }
+    
+    /**
+     * 计算两个集合的相同元素数量
+     */
+    private fun countCommonElements(set1: Set<String>, set2: Set<String>): Int {
+        return set1.intersect(set2).size
     }
     
     /**
