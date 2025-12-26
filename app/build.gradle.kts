@@ -70,6 +70,9 @@ dependencies {
     // Material Icons Extended
     implementation(libs.androidx.material.icons.extended)
     
+    // Vosk 离线语音识别
+    implementation("com.alphacephei:vosk-android:0.3.47")
+    
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
